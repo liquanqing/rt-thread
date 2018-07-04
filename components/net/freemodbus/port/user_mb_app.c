@@ -19,7 +19,7 @@
  * File: $Id: user_mb_app.c,v 1.60 2013/11/23 11:49:05 Armink $
  */
 #include "user_mb_app.h"
-
+#include <rtthread.h>
 /*------------------------Slave mode use these variables----------------------*/
 //Slave mode:DiscreteInputs variables
 USHORT   usSDiscInStart                               = S_DISCRETE_INPUT_START;
@@ -98,6 +98,11 @@ eMBErrorCode eMBRegInputCB(UCHAR * pucRegBuffer, USHORT usAddress, USHORT usNReg
  *
  * @return result
  */
+#define         S_SYSTEM_START_ADDR               0x003A
+#define         S_SYSTEM_SLAVE_ID_ADDR            0x0040
+#define         S_SYSTEM_KEEP_TEMP                0x0009
+extern void sys_param_save(void);
+extern struct rt_event sys_work_event;
 eMBErrorCode eMBRegHoldingCB(UCHAR * pucRegBuffer, USHORT usAddress,
         USHORT usNRegs, eMBRegisterMode eMode)
 {
@@ -135,12 +140,47 @@ eMBErrorCode eMBRegHoldingCB(UCHAR * pucRegBuffer, USHORT usAddress,
 
         /* write current register values with new values from the protocol stack. */
         case MB_REG_WRITE:
-            while (usNRegs > 0)
-            {
-                pusRegHoldingBuf[iRegIndex] = *pucRegBuffer++ << 8;
-                pusRegHoldingBuf[iRegIndex] |= *pucRegBuffer++;
-                iRegIndex++;
-                usNRegs--;
+            /*
+             * 如果系统正在运行中，参数修改全部禁止
+             */
+
+            if (iRegIndex != (S_SYSTEM_START_ADDR - S_REG_HOLDING_START)) {
+                if (pusRegHoldingBuf[S_SYSTEM_START_ADDR - S_REG_HOLDING_START]) {
+                    eStatus = MB_EINVAL;
+                } else {
+                    while (usNRegs > 0)
+                    {
+                        pusRegHoldingBuf[iRegIndex] = *pucRegBuffer++ << 8;
+                        pusRegHoldingBuf[iRegIndex] |= *pucRegBuffer++;
+                        if (iRegIndex == (S_SYSTEM_SLAVE_ID_ADDR - S_REG_HOLDING_START)) {
+                            rt_event_send(&sys_work_event, (1 << 7));
+                        } else if (iRegIndex == (S_SYSTEM_KEEP_TEMP - S_REG_HOLDING_START)) {
+                            rt_event_send(&sys_work_event, (1 << 8));
+                        }
+                        if (pusRegHoldingBuf[61 - S_REG_HOLDING_START]) {
+                            pusRegHoldingBuf[61 - S_REG_HOLDING_START] = 0;
+                            sys_param_save();
+                        }
+
+                        iRegIndex++;
+                        usNRegs--;
+                    }
+                }
+            } else {
+                while (usNRegs > 0)
+                {
+                    pusRegHoldingBuf[iRegIndex] = *pucRegBuffer++ << 8;
+                    pusRegHoldingBuf[iRegIndex] |= *pucRegBuffer++;
+                    iRegIndex++;
+                    usNRegs--;
+                }
+                if (pusRegHoldingBuf[S_SYSTEM_START_ADDR - S_REG_HOLDING_START]) {
+                    //send start semaphore
+                    rt_event_send(&sys_work_event, (1 << 0));
+                } else {
+                    //send stop semaphore
+                    rt_event_send(&sys_work_event, (1 << 1));
+                }
             }
             break;
         }
